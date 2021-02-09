@@ -3,10 +3,10 @@ import gym
 import numpy as np
 from TD3 import TD3
 from utils import ReplayBuffer
-
+import wandb
 def train():
     ######### Hyperparameters #########
-    env_name = "BipedalWalker-v2"
+    env_name = "LunarLanderContinuous-v2"
     log_interval = 10           # print avg reward after interval
     random_seed = 0
     gamma = 0.99                # discount for future rewards
@@ -19,10 +19,14 @@ def train():
     policy_delay = 2            # delayed policy updates parameter
     max_episodes = 1000         # max num of episodes
     max_timesteps = 2000        # max timesteps in one episode
+    state_noise_std = 0.0005
+    count_noise_states = 0
     directory = "./preTrained/{}".format(env_name) # save trained models
     filename = "TD3_{}_{}".format(env_name, random_seed)
     ###################################
-    
+    wandb.init(project="LunarLanderContinuous")
+
+
     env = gym.make(env_name)
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
@@ -55,6 +59,12 @@ def train():
             next_state, reward, done, _ = env.step(action)
             replay_buffer.add((state, action, reward, next_state, float(done)))
             state = next_state
+
+            # add gaussian noise to state
+            for _ in range(count_noise_states):
+                noised_state = next_state + np.random.randn(next_state.size) * state_noise_std
+                replay_buffer.add((state, action, reward, noised_state, float(done)))
+
             
             avg_reward += reward
             ep_reward += reward
@@ -85,6 +95,8 @@ def train():
             avg_reward = int(avg_reward / log_interval)
             print("Episode: {}\tAverage Reward: {}".format(episode, avg_reward))
             avg_reward = 0
+
+        wandb.log({"episode":episode, "avg_reward":avg_reward})
 
 if __name__ == '__main__':
     train()

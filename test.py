@@ -3,7 +3,7 @@ from TD3 import TD3
 from PIL import Image
 
 def test():
-    env_name = "RoboschoolWalker2d-v1"
+    env_name = "LunarLanderContinuous-v2"
     random_seed = 0
     n_episodes = 3
     lr = 0.002
