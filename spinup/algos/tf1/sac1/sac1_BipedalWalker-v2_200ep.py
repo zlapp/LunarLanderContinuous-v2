@@ -48,7 +48,7 @@ Soft Actor-Critic
 
 """
 def sac1(args, env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
-        steps_per_epoch=1000, epochs=100, replay_size=int(2e6), gamma=0.99, reward_scale=1.0,
+        steps_per_epoch=5000, epochs=100, replay_size=int(2e6), gamma=0.99, reward_scale=1.0,
         polyak=0.995, lr=5e-4, alpha=0.2, batch_size=200, start_steps=10000,
         max_ep_len_train=1000, max_ep_len_test=1000, logger_kwargs=dict(), save_freq=1):
     """
@@ -322,7 +322,7 @@ def sac1(args, env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), see
         # End of episode. Training (ep_len times).
         if d or (ep_len == max_ep_len_train):
             ep_index += 1
-            print('episode: {}, ep_len: {}, reward: {}'.format(ep_index, ep_len, ep_ret/reward_scale))
+            print('episode: {}, reward: {}'.format(ep_index, ep_ret/reward_scale))
             """
             Perform all SAC updates at the end of the trajectory.
             This is a slight difference from the SAC specified in the
@@ -350,15 +350,16 @@ def sac1(args, env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), see
         if t > 0 and t % steps_per_epoch == 0:
             epoch = t // steps_per_epoch
 
+
             test_agent(10)
                 # test_ep_ret = logger.get_stats('TestEpRet')[0]
                 # print('TestEpRet', test_ep_ret, 'Best:', test_ep_ret_best)
-            if logger.get_stats('TestEpRet')[0] >= 180:
+            if logger.get_stats('TestEpRet')[0] >= 280:
                 print('Recalculating TestEpRet...')
                 test_agent(100)
                 test_ep_ret = logger.get_stats('TestEpRet')[0]
                 # logger.epoch_dict['TestEpRet'] = []
-                if test_ep_ret >= 200:
+                if test_ep_ret >= 300:
                     print('\nEnvironment solved in {:d} episodes!\tAverage Score: {:.2f}'.format(ep_index, test_ep_ret))
                     exit()
                 print('TestEpRet', test_ep_ret, 'Best:', test_ep_ret_best)
@@ -394,7 +395,7 @@ def sac1(args, env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), see
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--env', type=str, default='LunarLanderContinuous-v2')  # 'Pendulum-v0'
+    parser.add_argument('--env', type=str, default='BipedalWalker-v2')  # 'Pendulum-v0'
 
     parser.add_argument('--is_restore_train', type=bool, default=False)
 
@@ -402,19 +403,19 @@ if __name__ == '__main__':
     parser.add_argument('--test_render', type=bool, default=False)
 
     parser.add_argument('--max_ep_len_test', type=int, default=2000) # 'BipedalWalkerHardcore-v2' max_ep_len is 2000
-    parser.add_argument('--max_ep_len_train', type=int, default=1000)  # max_ep_len_train < 2000//3 # 'BipedalWalkerHardcore-v2' max_ep_len is 2000
-    parser.add_argument('--start_steps', type=int, default=100)
+    parser.add_argument('--max_ep_len_train', type=int, default=400)  # max_ep_len_train < 2000//3 # 'BipedalWalkerHardcore-v2' max_ep_len is 2000
+    parser.add_argument('--start_steps', type=int, default=5000)
     parser.add_argument('--hid', type=int, default=300)
     parser.add_argument('--l', type=int, default=1)
     parser.add_argument('--gamma', type=float, default=0.99)
     parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--seed', '-s', type=int, default=np.random.random_integers(1000))
+    parser.add_argument('--seed', '-s', type=int, default=0)
     parser.add_argument('--epochs', type=int, default=10000)
     parser.add_argument('--alpha', default='auto', help="alpha can be either 'auto' or float(e.g:0.2).")
-    parser.add_argument('--reward_scale', type=float, default=1.0)
+    parser.add_argument('--reward_scale', type=float, default=5.0)
     parser.add_argument('--act_noise', type=float, default=0.3)
     parser.add_argument('--obs_noise', type=float, default=0.0)
-    parser.add_argument('--exp_name', type=str, default='sac1_LunarLanderContinuous-v2_debug3')
+    parser.add_argument('--exp_name', type=str, default='A_sac1_BipedalWalker-v2_debug')
     parser.add_argument('--stack_frames', type=int, default=4)
     args = parser.parse_args()
 
@@ -425,31 +426,38 @@ if __name__ == '__main__':
 
     class Wrapper(object):
 
-        def __init__(self, env, action_repeat):
+        def __init__(self, env, action_repeat=3):
             self._env = env
             self.action_repeat = action_repeat
 
         def __getattr__(self, name):
             return getattr(self._env, name)
 
+        def reset(self):
+            obs = self._env.reset() + args.obs_noise * (-2 * np.random.random(24) + 1)
+            return obs
+
         def step(self, action):
+            action +=  args.act_noise * (-2 * np.random.random(4) + 1)
             r = 0.0
             for _ in range(self.action_repeat):
                 obs_, reward_, done_, info_ = self._env.step(action)
-                reward_ = reward_ if reward_ > -99.0 else 0.0
                 r = r + reward_
-                if done_:
+                # r -= 0.001
+                if done_ and self.action_repeat!=1:
+                    return obs_+  args.obs_noise * (-2 * np.random.random(24) + 1), 0.0, done_, info_
+                if self.action_repeat==1:
                     return obs_, r, done_, info_
-            return obs_, r, done_, info_
+            return obs_+  args.obs_noise * (-2 * np.random.random(24) + 1), args.reward_scale*r, done_, info_
 
 
     # env = FrameStack(env, args.stack_frames)
 
-    env_lunar1 = gym.make(args.env)
-    env_lunar3 = Wrapper(gym.make(args.env),3)
+    env3 = Wrapper(gym.make(args.env), 3)
+    # env1 = Wrapper(gym.make(args.env), 1)
+    env1 = gym.make(args.env)
 
-
-    sac1(args, lambda n : env_lunar3 if n==3 else env_lunar1, actor_critic=core.mlp_actor_critic,
+    sac1(args, lambda n : env3 if n==3 else env1, actor_critic=core.mlp_actor_critic,
         ac_kwargs=dict(hidden_sizes=[200,150]), start_steps = args.start_steps,
         gamma=args.gamma, seed=args.seed, epochs=args.epochs, alpha=args.alpha,
         logger_kwargs=logger_kwargs, lr = args.lr, reward_scale=args.reward_scale,

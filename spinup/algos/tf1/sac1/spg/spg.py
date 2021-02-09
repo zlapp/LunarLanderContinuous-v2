@@ -3,24 +3,32 @@ import tensorflow as tf
 from numbers import Number
 import gym
 import time
-from spinup.algos.sac1 import core
-from spinup.algos.sac1.core import get_vars
+from spinup.algos.spg import core
+from spinup.algos.spg.core import get_vars
 from spinup.utils.logx import EpochLogger
 from gym.spaces import Box, Discrete
 from spinup.utils.frame_stack import FrameStack
 import os
+
+
+
+config = tf.ConfigProto()
+config.gpu_options.allow_growth = True
+session = tf.Session(config=config)
+
+
 
 class ReplayBuffer:
     """
     A simple FIFO experience replay buffer for SAC agents.
     """
 
-    def __init__(self, obs_dim, act_dim, size):
-        self.obs1_buf = np.zeros([size, obs_dim], dtype=np.float32)
-        self.obs2_buf = np.zeros([size, obs_dim], dtype=np.float32)
-        self.acts_buf = np.zeros([size, act_dim], dtype=np.float32)
-        self.rews_buf = np.zeros(size, dtype=np.float32)
-        self.done_buf = np.zeros(size, dtype=np.float32)
+    def __init__(self, obs_shape, act_shape, size):
+        self.obs1_buf = np.zeros((size,)+obs_shape, dtype=np.float32)
+        self.obs2_buf = np.zeros((size,)+obs_shape, dtype=np.float32)
+        self.acts_buf = np.zeros((size,)+act_shape, dtype=np.float32)
+        self.rews_buf = np.zeros((size,), dtype=np.float32)
+        self.done_buf = np.zeros((size,), dtype=np.float32)
         self.ptr, self.size, self.max_size = 0, 0, size
 
     def store(self, obs, act, rew, next_obs, done):
@@ -47,8 +55,8 @@ Soft Actor-Critic
 (With slight variations that bring it closer to TD3)
 
 """
-def sac1(args, env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
-        steps_per_epoch=1000, epochs=100, replay_size=int(2e6), gamma=0.99, reward_scale=1.0,
+def spg(args, env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
+        steps_per_epoch=5000, epochs=100, replay_size=int(2e6), gamma=0.99, reward_scale=1.0,
         polyak=0.995, lr=5e-4, alpha=0.2, batch_size=200, start_steps=10000,
         max_ep_len_train=1000, max_ep_len_test=1000, logger_kwargs=dict(), save_freq=1):
     """
@@ -137,17 +145,38 @@ def sac1(args, env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), see
     np.random.seed(seed)
 
     env, test_env = env_fn(3), env_fn(1)
+
+
+    # for gym env
     obs_dim = env.observation_space.shape[0]
+    o_shape = env.observation_space.shape
+
+    # for google football
+    # scenario_obsdim = {'academy_empty_goal':32, 'academy_empty_goal_random':32, 'academy_3_vs_1_with_keeper':44, 'academy_3_vs_1_with_keeper_random':44, 'academy_single_goal_versus_lazy':108}
+    # scenario_obsdim['academy_single_goal_versus_lazy'] = 108
+    # scenario_obsdim['academy_single_goal_versus_lazy_random'] = 108
+    # scenario_obsdim['11_vs_11_stochastic']= 108
+    # scenario_obsdim['11_vs_11_stochastic_random'] = 108
+    # obs_dim = scenario_obsdim[args.env]
+    # obs_space = Box(low=-1.0, high=1.0, shape=(obs_dim,), dtype=np.float32)
+    # o_shape = obs_space.shape
+
+
+    # act_dim = env.action_space.n
     act_dim = env.action_space.shape[0]
+    act_space = env.action_space   # Discrete(21) for gfootball
+    a_shape = act_space.shape      # ()
 
     # Action limit for clamping: critically, assumes all dimensions share the same bound!
-    act_limit = env.action_space.high[0]
+    # act_limit = env.action_space.high[0]
+
 
     # Share information about action space with policy architecture
     ac_kwargs['action_space'] = env.action_space
 
     # Inputs to computation graph
-    x_ph, a_ph, x2_ph, r_ph, d_ph = core.placeholders(obs_dim, act_dim, obs_dim, None, None)
+    x_ph, a_ph, x2_ph, r_ph, d_ph = core.placeholders(o_shape, a_shape, o_shape, None, None)
+
 
     # Main outputs from computation graph
     with tf.variable_scope('main'):
@@ -158,7 +187,7 @@ def sac1(args, env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), see
         _, _, logp_pi_, _, _, _,q1_pi_, q2_pi_= actor_critic(x2_ph, x2_ph, a_ph, **ac_kwargs)
 
     # Experience buffer
-    replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
+    replay_buffer = ReplayBuffer(obs_shape=o_shape, act_shape=a_shape, size=replay_size)
 
     # Count variables
     var_counts = tuple(core.count_vars(scope) for scope in 
@@ -188,10 +217,14 @@ def sac1(args, env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), see
 
 
     # Soft actor-critic losses
-    pi_loss = tf.reduce_mean(alpha * logp_pi - q1_pi)
+    # pi_loss = tf.reduce_mean(alpha * logp_pi - q1_pi)
     q1_loss = 0.5 * tf.reduce_mean((q_backup - q1)**2)
     q2_loss = 0.5 * tf.reduce_mean((q_backup - q2)**2)
     value_loss = q1_loss + q2_loss
+
+    pg_backup = tf.stop_gradient(q1_pi - alpha * logp_pi)
+    pi_loss = -tf.reduce_mean(logp_pi * pg_backup)
+
 
     # Policy train op 
     # (has to be separate from value train op, because q1_pi appears in pi_loss)
@@ -322,13 +355,13 @@ def sac1(args, env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), see
         # End of episode. Training (ep_len times).
         if d or (ep_len == max_ep_len_train):
             ep_index += 1
-            print('episode: {}, ep_len: {}, reward: {}'.format(ep_index, ep_len, ep_ret/reward_scale))
+            print('episode: {}, reward: {}'.format(ep_index, ep_ret/reward_scale))
             """
             Perform all SAC updates at the end of the trajectory.
             This is a slight difference from the SAC specified in the
             original paper.
             """
-            for j in range(int(1.5*ep_len)):
+            for j in range(ep_len):
                 batch = replay_buffer.sample_batch(batch_size)
                 feed_dict = {x_ph: batch['obs1'],
                              x2_ph: batch['obs2'],
@@ -350,17 +383,14 @@ def sac1(args, env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), see
         if t > 0 and t % steps_per_epoch == 0:
             epoch = t // steps_per_epoch
 
-            test_agent(10)
+            if epoch < 1000:
+                test_agent(5)
                 # test_ep_ret = logger.get_stats('TestEpRet')[0]
                 # print('TestEpRet', test_ep_ret, 'Best:', test_ep_ret_best)
-            if logger.get_stats('TestEpRet')[0] >= 180:
-                print('Recalculating TestEpRet...')
-                test_agent(100)
+            else:
+                test_agent(25)
                 test_ep_ret = logger.get_stats('TestEpRet')[0]
                 # logger.epoch_dict['TestEpRet'] = []
-                if test_ep_ret >= 200:
-                    print('\nEnvironment solved in {:d} episodes!\tAverage Score: {:.2f}'.format(ep_index, test_ep_ret))
-                    exit()
                 print('TestEpRet', test_ep_ret, 'Best:', test_ep_ret_best)
 
             # logger.store(): store the data; logger.log_tabular(): log the data; logger.dump_tabular(): write the data
@@ -394,7 +424,7 @@ def sac1(args, env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), see
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--env', type=str, default='LunarLanderContinuous-v2')  # 'Pendulum-v0'
+    parser.add_argument('--env', type=str, default='BipedalWalker-v2')  # 'Pendulum-v0'
 
     parser.add_argument('--is_restore_train', type=bool, default=False)
 
@@ -402,19 +432,19 @@ if __name__ == '__main__':
     parser.add_argument('--test_render', type=bool, default=False)
 
     parser.add_argument('--max_ep_len_test', type=int, default=2000) # 'BipedalWalkerHardcore-v2' max_ep_len is 2000
-    parser.add_argument('--max_ep_len_train', type=int, default=1000)  # max_ep_len_train < 2000//3 # 'BipedalWalkerHardcore-v2' max_ep_len is 2000
-    parser.add_argument('--start_steps', type=int, default=100)
+    parser.add_argument('--max_ep_len_train', type=int, default=400)  # max_ep_len_train < 2000//3 # 'BipedalWalkerHardcore-v2' max_ep_len is 2000
+    parser.add_argument('--start_steps', type=int, default=10000)
     parser.add_argument('--hid', type=int, default=300)
     parser.add_argument('--l', type=int, default=1)
     parser.add_argument('--gamma', type=float, default=0.99)
-    parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--seed', '-s', type=int, default=np.random.random_integers(1000))
+    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--seed', '-s', type=int, default=0)
     parser.add_argument('--epochs', type=int, default=10000)
-    parser.add_argument('--alpha', default='auto', help="alpha can be either 'auto' or float(e.g:0.2).")
-    parser.add_argument('--reward_scale', type=float, default=1.0)
+    parser.add_argument('--alpha', default=0.2, help="alpha can be either 'auto' or float(e.g:0.2).")
+    parser.add_argument('--reward_scale', type=float, default=5.0)
     parser.add_argument('--act_noise', type=float, default=0.3)
     parser.add_argument('--obs_noise', type=float, default=0.0)
-    parser.add_argument('--exp_name', type=str, default='sac1_LunarLanderContinuous-v2_debug3')
+    parser.add_argument('--exp_name', type=str, default='spg')
     parser.add_argument('--stack_frames', type=int, default=4)
     args = parser.parse_args()
 
@@ -425,32 +455,39 @@ if __name__ == '__main__':
 
     class Wrapper(object):
 
-        def __init__(self, env, action_repeat):
+        def __init__(self, env, action_repeat=3):
             self._env = env
             self.action_repeat = action_repeat
 
         def __getattr__(self, name):
             return getattr(self._env, name)
 
+        def reset(self):
+            obs = self._env.reset() + args.obs_noise * (-2 * np.random.random(24) + 1)
+            return obs
+
         def step(self, action):
+            action +=  args.act_noise * (-2 * np.random.random(4) + 1)
             r = 0.0
             for _ in range(self.action_repeat):
                 obs_, reward_, done_, info_ = self._env.step(action)
-                reward_ = reward_ if reward_ > -99.0 else 0.0
                 r = r + reward_
-                if done_:
+                # r -= 0.001
+                if done_ and self.action_repeat!=1:
+                    return obs_+  args.obs_noise * (-2 * np.random.random(24) + 1), 0.0, done_, info_
+                if self.action_repeat==1:
                     return obs_, r, done_, info_
-            return obs_, r, done_, info_
+            return obs_+  args.obs_noise * (-2 * np.random.random(24) + 1), args.reward_scale*r, done_, info_
 
 
     # env = FrameStack(env, args.stack_frames)
 
-    env_lunar1 = gym.make(args.env)
-    env_lunar3 = Wrapper(gym.make(args.env),3)
+    env3 = Wrapper(gym.make(args.env), 3)
+    # env1 = Wrapper(gym.make(args.env), 1)
+    env1 = gym.make(args.env)
 
-
-    sac1(args, lambda n : env_lunar3 if n==3 else env_lunar1, actor_critic=core.mlp_actor_critic,
-        ac_kwargs=dict(hidden_sizes=[200,150]), start_steps = args.start_steps,
+    spg(args, lambda n : env3 if n==3 else env1, actor_critic=core.mlp_actor_critic,
+        ac_kwargs=dict(hidden_sizes=[400,300]), start_steps = args.start_steps,
         gamma=args.gamma, seed=args.seed, epochs=args.epochs, alpha=args.alpha,
         logger_kwargs=logger_kwargs, lr = args.lr, reward_scale=args.reward_scale,
          max_ep_len_train = args.max_ep_len_train, max_ep_len_test=args.max_ep_len_test)
