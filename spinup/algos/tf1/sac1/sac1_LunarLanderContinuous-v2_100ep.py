@@ -388,8 +388,10 @@ def sac1(args, env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), see
                 save_path = saver.save(sess, checkpoint_path+'/model.ckpt', t)
                 print("Model saved in path: %s" % save_path)
                 test_ep_ret_best = test_ep_ret
-                
+
             if test_ep_ret >= 200:
+                print("Model saved in path: %s" % save_path)
+
                 print('\nEnvironment solved in {:d} episodes!\tAverage Score: {:.2f}'.format(ep_index, test_ep_ret))
                 exit()
 
