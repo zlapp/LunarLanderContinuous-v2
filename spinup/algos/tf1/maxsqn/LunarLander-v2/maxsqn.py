@@ -3,8 +3,8 @@ import tensorflow as tf
 from numbers import Number
 import gym
 import time
-from spinup.algos.maxsqn import core
-from spinup.algos.maxsqn.core import get_vars
+import core
+from core import get_vars
 from spinup.utils.logx import EpochLogger
 from gym.spaces import Box, Discrete
 
@@ -49,8 +49,8 @@ Soft Actor-Critic
 """ make sure: max_ep_len < steps_per_epoch """
 
 def maxsqn(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
-        steps_per_epoch=5000, epochs=100, replay_size=int(1e6), gamma=0.99,
-        polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=10000,
+        steps_per_epoch=500, epochs=200, replay_size=int(1.5e4), gamma=0.99,
+        polyak=0.995, lr=1e-3, alpha=0.2, batch_size=200, start_steps=100,
         max_ep_len=1000, logger_kwargs=dict(), save_freq=1):
     """
 
@@ -58,8 +58,8 @@ def maxsqn(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
         env_fn : A function which creates a copy of the environment.
             The environment must satisfy the OpenAI Gym API.
 
-        actor_critic: A function which takes in placeholder symbols
-            for state, ``x_ph``, and action, ``a_ph``, and returns the main
+        actor_critic: A function which takes in placeholder symbols 
+            for state, ``x_ph``, and action, ``a_ph``, and returns the main 
             outputs from the agent's Tensorflow computation graph:
 
             ===========  ================  ======================================
@@ -67,33 +67,33 @@ def maxsqn(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
             ===========  ================  ======================================
             ``mu``       (batch, act_dim)  | Computes mean actions from policy
                                            | given states.
-            ``pi``       (batch, act_dim)  | Samples actions from policy given
+            ``pi``       (batch, act_dim)  | Samples actions from policy given 
                                            | states.
             ``logp_pi``  (batch,)          | Gives log probability, according to
                                            | the policy, of the action sampled by
                                            | ``pi``. Critical: must be differentiable
                                            | with respect to policy parameters all
                                            | the way through action sampling.
-            ``q1``       (batch,)          | Gives one estimate of Q* for
+            ``q1``       (batch,)          | Gives one estimate of Q* for 
                                            | states in ``x_ph`` and actions in
                                            | ``a_ph``.
-            ``q2``       (batch,)          | Gives another estimate of Q* for
+            ``q2``       (batch,)          | Gives another estimate of Q* for 
                                            | states in ``x_ph`` and actions in
                                            | ``a_ph``.
-            ``q1_pi``    (batch,)          | Gives the composition of ``q1`` and
-                                           | ``pi`` for states in ``x_ph``:
+            ``q1_pi``    (batch,)          | Gives the composition of ``q1`` and 
+                                           | ``pi`` for states in ``x_ph``: 
                                            | q1(x, pi(x)).
-            ``q2_pi``    (batch,)          | Gives the composition of ``q2`` and
-                                           | ``pi`` for states in ``x_ph``:
+            ``q2_pi``    (batch,)          | Gives the composition of ``q2`` and 
+                                           | ``pi`` for states in ``x_ph``: 
                                            | q2(x, pi(x)).
             ===========  ================  ======================================
 
-        ac_kwargs (dict): Any kwargs appropriate for the actor_critic
+        ac_kwargs (dict): Any kwargs appropriate for the actor_critic 
             function you provided to SAC.
 
         seed (int): Seed for random number generators.
 
-        steps_per_epoch (int): Number of steps of interaction (state-action pairs)
+        steps_per_epoch (int): Number of steps of interaction (state-action pairs) 
             for the agent and the environment in each epoch.
 
         epochs (int): Number of epochs to run and train agent.
@@ -102,14 +102,14 @@ def maxsqn(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
 
         gamma (float): Discount factor. (Always between 0 and 1.)
 
-        polyak (float): Interpolation factor in polyak averaging for target
-            networks. Target networks are updated towards main networks
+        polyak (float): Interpolation factor in polyak averaging for target 
+            networks. Target networks are updated towards main networks 
             according to:
 
-            .. math:: \\theta_{\\text{targ}} \\leftarrow
+            .. math:: \\theta_{\\text{targ}} \\leftarrow 
                 \\rho \\theta_{\\text{targ}} + (1-\\rho) \\theta
 
-            where :math:`\\rho` is polyak. (Always between 0 and 1, usually
+            where :math:`\\rho` is polyak. (Always between 0 and 1, usually 
             close to 1.)
 
         lr (float): Learning rate (used for policy/value/alpha learning).
@@ -138,7 +138,7 @@ def maxsqn(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
     np.random.seed(seed)
 
 
-    env, test_env = env_fn(), env_fn()
+    env, test_env = env_fn(3), env_fn(1)
     obs_dim = env.observation_space.shape[0]
     obs_space = env.observation_space
     act_dim = env.action_space.n
@@ -272,6 +272,7 @@ def maxsqn(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
     total_steps = steps_per_epoch * epochs
 
     ep_index = 0
+    test_ep_ret = 0.0
     # Main loop: collect experience in env and update/log each epoch
     for t in range(total_steps):
 
@@ -319,7 +320,7 @@ def maxsqn(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
             This is a slight difference from the SAC specified in the
             original paper.
             """
-            for j in range(ep_len):
+            for j in range(int(1.5*ep_len)):
                 batch = replay_buffer.sample_batch(batch_size)
                 feed_dict = {x_ph: batch['obs1'],
                              x2_ph: batch['obs2'],
@@ -352,7 +353,12 @@ def maxsqn(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
             #     logger.save_state({'env': env}, None)
 
             # Test the performance of the deterministic version of the agent.
-            test_agent(1)
+
+            test_agent(10)
+            if logger.get_stats('TestEpRet')[0] >= 190:
+                print('Recalculating TestEpRet...')
+                test_agent(100)
+                test_ep_ret = logger.get_stats('TestEpRet')[0]
 
             # logger.store(): store the data; logger.log_tabular(): log the data; logger.dump_tabular(): write the data
             # Log info about epoch
@@ -374,6 +380,11 @@ def maxsqn(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
             logger.log_tabular('Time', time.time()-start_time)
             logger.dump_tabular()
 
+            if test_ep_ret >= 200:
+                print('\nEnvironment solved in {:d} episodes!\tAverage Score: {:.2f}'.format(ep_index, test_ep_ret))
+                exit()
+
+
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
@@ -381,18 +392,42 @@ if __name__ == '__main__':
     parser.add_argument('--hid', type=int, default=300)
     parser.add_argument('--l', type=int, default=1)
     parser.add_argument('--gamma', type=float, default=0.99)
-    parser.add_argument('--seed', '-s', type=int, default=8)
+    parser.add_argument('--seed', '-s', type=int, default=1)
     parser.add_argument('--epochs', type=int, default=5000)
     parser.add_argument('--max_ep_len', type=int, default=1000)    # make sure: max_ep_len < steps_per_epoch
     parser.add_argument('--alpha', default='auto', help="alpha can be either 'auto' or float(e.g:0.2).")
-    parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--exp_name', type=str, default='maxsqn_debug')
+    parser.add_argument('--lr', type=float, default=2.2e-3)
+    parser.add_argument('--exp_name', type=str, default='maxsqn_LunarLander-v2_debug')
     args = parser.parse_args()
+
+
+
+    class Wrapper(object):
+
+        def __init__(self, env, action_repeat):
+            self._env = env
+            self.action_repeat = action_repeat
+
+        def __getattr__(self, name):
+            return getattr(self._env, name)
+
+        def step(self, action):
+            r = 0.0
+            for _ in range(self.action_repeat):
+                obs_, reward_, done_, info_ = self._env.step(action)
+                reward_ = reward_ if reward_ > -99.0 else 0.0
+                r = r + reward_
+                if done_:
+                    return obs_, r, done_, info_
+            return obs_, r, done_, info_
 
     from spinup.utils.run_utils import setup_logger_kwargs
     logger_kwargs = setup_logger_kwargs(args.exp_name, args.seed)
 
-    maxsqn(lambda : gym.make(args.env), actor_critic=core.mlp_actor_critic,
-        ac_kwargs=dict(hidden_sizes=[400,300]),
+    env_lunar1 = gym.make(args.env)
+    env_lunar3 = Wrapper(gym.make(args.env),3)
+    # env_lunar = gym.make(args.env)
+    maxsqn(lambda n : env_lunar3 if n==3 else env_lunar1, actor_critic=core.mlp_actor_critic,
+        ac_kwargs=dict(hidden_sizes=[128,64]),
         gamma=args.gamma, seed=args.seed, epochs=args.epochs, alpha=args.alpha, lr=args.lr, max_ep_len = args.max_ep_len,
         logger_kwargs=logger_kwargs)

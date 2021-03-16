@@ -2,7 +2,7 @@ import numpy as np
 import tensorflow as tf
 from numbers import Number
 import gym
-import time
+import time, os
 from spinup.algos.maxsqn import core
 from spinup.algos.maxsqn.core import get_vars
 from spinup.utils.logx import EpochLogger
@@ -48,9 +48,9 @@ Soft Actor-Critic
 
 """ make sure: max_ep_len < steps_per_epoch """
 
-def maxsqn(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
-        steps_per_epoch=5000, epochs=100, replay_size=int(1e6), gamma=0.99,
-        polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=10000,
+def maxsqn(args, env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
+        steps_per_epoch=5000, epochs=100, replay_size=int(5e6), gamma=0.99,
+        polyak=0.995, lr=1e-3, alpha=0.2, batch_size=256, start_steps=20000,
         max_ep_len=1000, logger_kwargs=dict(), save_freq=1):
     """
 
@@ -130,17 +130,22 @@ def maxsqn(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
             the current policy and value function.
 
     """
-    # print(max_ep_len,type(max_ep_len))
-    logger = EpochLogger(**logger_kwargs)
-    logger.save_config(locals())
+    if not args.is_test:
+        logger = EpochLogger(**logger_kwargs)
+        logger.save_config(locals())
 
     tf.set_random_seed(seed)
     np.random.seed(seed)
 
 
-    env, test_env = env_fn(), env_fn()
-    obs_dim = env.observation_space.shape[0]
-    obs_space = env.observation_space
+    env, test_env = env_fn(3), env_fn(1)
+    # obs_dim = env.observation_space.shape[0]
+    # obs_space = env.observation_space
+
+    scenario_obsdim = {'academy_empty_goal':32, 'academy_empty_goal_random':32, 'academy_3_vs_1_with_keeper':44, 'academy_3_vs_1_with_keeper_random':44, 'academy_single_goal_versus_lazy':108}
+    obs_dim = scenario_obsdim[args.env]
+    obs_space = Box(low=-1.0, high=1.0, shape=(obs_dim,), dtype=np.float32)
+
     act_dim = env.action_space.n
     act_space = env.action_space
 
@@ -156,7 +161,7 @@ def maxsqn(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
     if alpha == 'auto':
         # target_entropy = (-np.prod(env.action_space.n))
         # target_entropy = (np.prod(env.action_space.n))/4/10
-        target_entropy = 0.4
+        target_entropy = 0.5
 
         log_alpha = tf.get_variable('log_alpha', dtype=tf.float32, initializer=0.0)
         alpha = tf.exp(log_alpha)
@@ -194,8 +199,11 @@ def maxsqn(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
 ######
 
     # Min Double-Q:
-    # min_q_pi = tf.minimum(q1_pi_, q2_pi_)
-    min_q_pi = tf.minimum(q1_mu_, q2_mu_)
+    min_q_pi = tf.minimum(q1_pi_, q2_pi_)
+    # min_q_pi = tf.minimum(q1_mu_, q2_mu_)
+
+    # min_q_pi = tf.clip_by_value(min_q_pi, 0.0, 200.0)
+
 
     # Targets for Q and V regression
     v_backup = tf.stop_gradient(min_q_pi - alpha * logp_pi2)  ############################## alpha=0
@@ -241,13 +249,50 @@ def maxsqn(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
     sess.run(tf.global_variables_initializer())
     sess.run(target_init)
 
-    # Setup model saving
-    logger.setup_tf_saver(sess, inputs={'x': x_ph, 'a': a_ph},
-                                outputs={'mu': mu, 'pi': pi, 'q1': q1, 'q2': q2})
+
+
+    ##############################  save and restore  ############################
+
+    saver = tf.train.Saver()
+
+    checkpoint_path = logger_kwargs['output_dir'] + '/checkpoints'
+    if not os.path.exists(checkpoint_path):
+        os.makedirs(checkpoint_path)
+
+    if args.is_test or args.is_restore_train:
+        ckpt = tf.train.get_checkpoint_state(checkpoint_path)
+        if ckpt and ckpt.model_checkpoint_path:
+            saver.restore(sess, ckpt.model_checkpoint_path)
+            print("Model restored.")
+
 
     def get_action(o, deterministic=False):
         act_op = mu if deterministic else pi
         return sess.run(act_op, feed_dict={x_ph: np.expand_dims(o, axis=0)})[0]
+
+
+
+    ##############################  test  ############################
+
+    if args.is_test:
+        test_env = football_env.create_environment(env_name=args.env, representation='simple115', with_checkpoints=False, render=True)
+        ave_ep_ret = 0
+        for j in range(10000):
+            o, r, d, ep_ret, ep_len = test_env.reset(), 0, False, 0, 0
+            while not (d or (ep_len == 500)): # (d or (ep_len == 2000)):
+                o, r, d, _ = test_env.step(get_action(o, True))
+                # print(r, d)
+                time.sleep(0.05)
+                ep_ret += r
+                ep_len += 1
+                if args.test_render:
+                    test_env.render()
+            ave_ep_ret = (j*ave_ep_ret + ep_ret)/(j+1)
+            print('ep_len', ep_len, 'ep_ret:', ep_ret, 'ave_ep_ret:',ave_ep_ret,'({}/10000)'.format(j+1) )
+        return
+
+
+    ##############################  train  ############################
 
     def test_agent(n=20):  # n: number of tests
         global sess, mu, pi, q1, q2, q1_pi, q2_pi
@@ -255,7 +300,7 @@ def maxsqn(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
             o, r, d, ep_ret, ep_len = test_env.reset(), 0, False, 0, 0
             while not(d or (ep_len == max_ep_len)):  # max_ep_len
                 # Take deterministic actions at test time
-                o, r, d, _ = test_env.step(get_action(o, True))
+                o, r, d, _ = test_env.step(get_action(o, args.test_determin))
                 ep_ret += r
                 ep_len += 1
             logger.store(TestEpRet=ep_ret, TestEpLen=ep_len)
@@ -272,6 +317,8 @@ def maxsqn(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
     total_steps = steps_per_epoch * epochs
 
     ep_index = 0
+    test_ep_ret_best = test_ep_ret = -10000.0
+    is_wrap = False
     # Main loop: collect experience in env and update/log each epoch
     for t in range(total_steps):
 
@@ -286,7 +333,11 @@ def maxsqn(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
         else:
             a = env.action_space.sample()
 
-        np.random.random()
+        # if np.random.random() > t/(3e6):
+        #     a = env.action_space.sample()
+        # else:
+        #     a = get_action(o)
+
 
 
         # Step the env
@@ -303,8 +354,11 @@ def maxsqn(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
         # that isn't based on the agent's state)
         d = False if ep_len==max_ep_len else d
 
+        # d_store = True if r == 1.0 else False
+
         # Store experience to replay buffer
         replay_buffer.store(o, a, r, o2, d)
+        # print(a,r,d)
 
         # Super critical, easy to overlook step: make sure to update
         # most recent observation!
@@ -332,67 +386,159 @@ def maxsqn(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
                 logger.store(LossQ1=outs[0], LossQ2=outs[1],
                             Q1Vals=outs[2], Q2Vals=outs[3],
                             LogPi=outs[4], Alpha=outs[5])
-
-            #if d:
             logger.store(EpRet=ep_ret, EpLen=ep_len)
+
+
+
+
+            # End of epoch wrap-up
+            if is_wrap:
+                epoch = t // steps_per_epoch
+
+                # if epoch < 30:
+                #     test_agent(1)
+                #     # test_ep_ret = logger.get_stats('TestEpRet')[0]
+                #     # print('TestEpRet', test_ep_ret, 'Best:', test_ep_ret_best)
+                # else:
+                #     test_agent(1)
+                #     test_ep_ret = logger.get_stats('TestEpRet')[0]
+                #     # if test_ep_ret > test_ep_ret_best:
+                #     #     test_agent(30)
+                #     #     test_ep_ret = logger.get_stats('TestEpRet')[0]
+                #     print('TestEpRet', test_ep_ret, 'Best:', test_ep_ret_best)
+
+                # logger.store(): store the data; logger.log_tabular(): log the data; logger.dump_tabular(): write the data
+                # Log info about epoch
+                logger.log_tabular('Epoch', epoch)
+                logger.log_tabular('EpRet', with_min_and_max=True)
+                # logger.log_tabular('TestEpRet', with_min_and_max=True)
+                logger.log_tabular('EpLen', average_only=True)
+                # logger.log_tabular('TestEpLen', average_only=True)
+                logger.log_tabular('TotalEnvInteracts', t)
+                logger.log_tabular('Alpha',average_only=True)
+                logger.log_tabular('Q1Vals', with_min_and_max=True)
+                logger.log_tabular('Q2Vals', with_min_and_max=True)
+                # logger.log_tabular('VVals', with_min_and_max=True)
+                logger.log_tabular('LogPi', with_min_and_max=True)
+                # logger.log_tabular('LossPi', average_only=True)
+                logger.log_tabular('LossQ1', average_only=True)
+                logger.log_tabular('LossQ2', average_only=True)
+                # logger.log_tabular('LossV', average_only=True)
+                logger.log_tabular('Time', time.time()-start_time)
+                logger.dump_tabular()
+
+
+                # Save model
+                if ((epoch % args.save_freq == 0) or (epoch == epochs - 1)): # or test_ep_ret > test_ep_ret_best:
+                    save_path = saver.save(sess, checkpoint_path+'/model.ckpt', t)
+                    print("Model saved in path: %s" % save_path)
+                    test_ep_ret_best = test_ep_ret
+
+                is_wrap = False
 
 
             # o = env.reset()                                              #####################
             # o, r, d, ep_ret, ep_len = env.step(1)[0], 0, False, 0, 0     #####################
             o, r, d, ep_ret, ep_len = env.reset(), 0, False, 0, 0
 
-
-
-        # End of epoch wrap-up
         if t > 0 and t % steps_per_epoch == 0:
-            epoch = t // steps_per_epoch
+            is_wrap = True
 
-            # # Save model
-            # if (epoch % save_freq == 0) or (epoch == epochs-1):
-            #     logger.save_state({'env': env}, None)
-
-            # Test the performance of the deterministic version of the agent.
-            test_agent(1)
-
-            # logger.store(): store the data; logger.log_tabular(): log the data; logger.dump_tabular(): write the data
-            # Log info about epoch
-            logger.log_tabular('Epoch', epoch)
-            logger.log_tabular('EpRet', with_min_and_max=True)
-            logger.log_tabular('TestEpRet', with_min_and_max=True)
-            logger.log_tabular('EpLen', average_only=True)
-            logger.log_tabular('TestEpLen', average_only=True)
-            logger.log_tabular('TotalEnvInteracts', t)
-            logger.log_tabular('Alpha',average_only=True)
-            logger.log_tabular('Q1Vals', with_min_and_max=True)
-            logger.log_tabular('Q2Vals', with_min_and_max=True)
-            # logger.log_tabular('VVals', with_min_and_max=True)
-            logger.log_tabular('LogPi', with_min_and_max=True)
-            # logger.log_tabular('LossPi', average_only=True)
-            logger.log_tabular('LossQ1', average_only=True)
-            logger.log_tabular('LossQ2', average_only=True)
-            # logger.log_tabular('LossV', average_only=True)
-            logger.log_tabular('Time', time.time()-start_time)
-            logger.dump_tabular()
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--env', type=str, default='LunarLander-v2')  # CartPole-v0(o4a2, alpha2, gamma0.8), LunarLander-v2(o8a4, alpha:0.05-0.2), Acrobot-v1, Breakout-ram-v4 MountainCar-v0 Atlantis-ram-v0
-    parser.add_argument('--hid', type=int, default=300)
-    parser.add_argument('--l', type=int, default=1)
-    parser.add_argument('--gamma', type=float, default=0.99)
-    parser.add_argument('--seed', '-s', type=int, default=8)
-    parser.add_argument('--epochs', type=int, default=5000)
-    parser.add_argument('--max_ep_len', type=int, default=1000)    # make sure: max_ep_len < steps_per_epoch
+    #  {'academy_empty_goal':32, 'academy_3_vs_1_with_keeper':44, 'academy_single_goal_versus_lazy':108}
+    parser.add_argument('--env', type=str, default='academy_3_vs_1_with_keeper_random')
+    parser.add_argument('--epochs', type=int, default=200000)
+    parser.add_argument('--steps_per_epoch', type=int, default=int(5e3))
+    parser.add_argument('--save_freq', type=int, default=40)
+    parser.add_argument('--is_restore_train', type=bool, default=False)
+
+    parser.add_argument('--is_test', type=bool, default=False)
+    parser.add_argument('--test_determin', type=bool, default=True)
+    parser.add_argument('--test_render', type=bool, default=False)
+
+    # replay_size, steps_per_epoch, batch_size, start_steps, save_freq
+
+    parser.add_argument('--replay_size', type=int, default=int(5e6))
+    parser.add_argument('--net', type=list, default=[600,400,200])
+    parser.add_argument('--batch_size', type=int, default=300)
+    parser.add_argument('--start_steps', type=int, default=int(3e4))
+
+    parser.add_argument('--gamma', type=float, default=0.997)
+    parser.add_argument('--seed', '-s', type=int, default=0)  # maxsqn_football100_a 790, maxsqn_football100_b 110
+
+    parser.add_argument('--max_ep_len', type=int, default=170)    # make sure: max_ep_len < steps_per_epoch
     parser.add_argument('--alpha', default='auto', help="alpha can be either 'auto' or float(e.g:0.2).")
-    parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--exp_name', type=str, default='maxsqn_debug')
+    parser.add_argument('--lr', type=float, default=5e-5)
+    parser.add_argument('--exp_name', type=str, default='debug')#'3v1_scale200_repeat2_c_True')#'1_academy_empty_goal_random_seed0')#'1_academy_empty_goal_0-0')#'1_{}_seed{}-0-half-random_repeat2'.format(parser.parse_args().env,parser.parse_args().seed))
     args = parser.parse_args()
 
     from spinup.utils.run_utils import setup_logger_kwargs
     logger_kwargs = setup_logger_kwargs(args.exp_name, args.seed)
 
-    maxsqn(lambda : gym.make(args.env), actor_critic=core.mlp_actor_critic,
-        ac_kwargs=dict(hidden_sizes=[400,300]),
+    import gfootball.env as football_env
+
+
+    # reward wrapper
+    class FootballWrapper(object):
+
+        def __init__(self, env):
+            self._env = env
+
+        def __getattr__(self, name):
+            return getattr(self._env, name)
+
+        # def reset(self):
+        #     obs = self._env.reset()
+        #     if obs[0] > 0.5:
+        #         obs, _, _, _ = self._env.step(12)
+        #     return obs
+
+        def step(self, action):
+            r = 0.0
+            for _ in range(2):
+                obs, reward, done, info = self._env.step(action)
+                # if reward != 0.0:
+                #     done = True
+                # else:
+                #     done = False
+                if reward < 0.0:
+                    reward = 0.0
+                # reward -= 0.00175
+                # reward += (0.5*obs[0] + (0.5-np.abs(obs[1])))*0.001
+                if obs[0] < 0.0:
+                    done = True
+                # reward = reward + self.incentive1(obs)
+                r += reward
+
+                if done:
+                    return obs, r * 200, done, info
+
+            return obs, r*200, done, info
+
+        def incentive1(self, obs):
+            who_controls_ball = obs[7:9]
+            pos_ball = obs[0:2]
+            distance_to_goal =np.array([np.exp(-np.linalg.norm(pos_ball-[1.01,0])), -np.exp(-np.linalg.norm(pos_ball-[-1.01,0]))])
+            r = np.dot(who_controls_ball,distance_to_goal)*0.003
+            return r
+
+        def incentive2(self, obs):
+            who_controls_ball = obs[7:9]
+            pos_ball = obs[0]
+            distance_to_goal =np.array([(pos_ball+1)/2.0, (pos_ball-1)/2.0])
+            r = np.dot(who_controls_ball,distance_to_goal)*0.003
+            return r
+
+
+    # academy_empty_goal academy_empty_goal_close
+    env0 = football_env.create_environment(env_name=args.env, representation='simple115', with_checkpoints=False, render=False)
+    env_1 = FootballWrapper(env0)
+    env_3 = env_1
+    maxsqn(args, lambda n : env_3 if n==3 else env_1, actor_critic=core.mlp_actor_critic,
+        ac_kwargs=dict(hidden_sizes=args.net), replay_size=args.replay_size, steps_per_epoch=args.steps_per_epoch,
+        batch_size=args.batch_size, start_steps=args.start_steps, save_freq=args.save_freq,
         gamma=args.gamma, seed=args.seed, epochs=args.epochs, alpha=args.alpha, lr=args.lr, max_ep_len = args.max_ep_len,
         logger_kwargs=logger_kwargs)
