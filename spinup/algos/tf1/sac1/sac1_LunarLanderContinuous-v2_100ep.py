@@ -358,9 +358,7 @@ def sac1(args, env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), see
                 test_agent(100)
                 test_ep_ret = logger.get_stats('TestEpRet')[0]
                 # logger.epoch_dict['TestEpRet'] = []
-                if test_ep_ret >= 200:
-                    print('\nEnvironment solved in {:d} episodes!\tAverage Score: {:.2f}'.format(ep_index, test_ep_ret))
-                    exit()
+
                 print('TestEpRet', test_ep_ret, 'Best:', test_ep_ret_best)
 
             # logger.store(): store the data; logger.log_tabular(): log the data; logger.dump_tabular(): write the data
@@ -390,6 +388,10 @@ def sac1(args, env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), see
                 save_path = saver.save(sess, checkpoint_path+'/model.ckpt', t)
                 print("Model saved in path: %s" % save_path)
                 test_ep_ret_best = test_ep_ret
+                
+            if test_ep_ret >= 200:
+                print('\nEnvironment solved in {:d} episodes!\tAverage Score: {:.2f}'.format(ep_index, test_ep_ret))
+                exit()
 
 if __name__ == '__main__':
     import argparse
