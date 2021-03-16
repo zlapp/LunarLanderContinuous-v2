@@ -382,7 +382,7 @@ if __name__ == '__main__':
     parser.add_argument('--max_ep_len', type=int, default=1000)    # make sure: max_ep_len < steps_per_epoch
     parser.add_argument('--alpha', default=0.1, help="alpha can be either 'auto' or float(e.g:0.2).")
     parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--exp_name', type=str, default='debug')
+    parser.add_argument('--exp_name', type=str, default='sqn')
     args = parser.parse_args()
 
     from spinup.utils.run_utils import setup_logger_kwargs
