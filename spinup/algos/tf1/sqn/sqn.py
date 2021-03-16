@@ -7,6 +7,7 @@ from spinup.algos.tf1.sqn import core
 from spinup.algos.tf1.sqn.core import get_vars
 from spinup.utils.logx import EpochLogger
 from gym.spaces import Box, Discrete
+import os
 
 class ReplayBuffer:
     """
@@ -270,6 +271,15 @@ def sqn(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
 
     total_steps = steps_per_epoch * epochs
 
+    saver = tf.train.Saver()
+
+    checkpoint_path = logger_kwargs['output_dir'] + '/checkpoints'
+    if not os.path.exists(checkpoint_path):
+        os.makedirs(checkpoint_path)
+
+    ep_index = 0
+    test_ep_ret_best = test_ep_ret = -10000.0
+
     # Main loop: collect experience in env and update/log each epoch
     for t in range(total_steps):
 
@@ -310,6 +320,9 @@ def sqn(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
 
         # End of episode. Training (ep_len times).
         if d or (ep_len == max_ep_len):   # make sure: max_ep_len < steps_per_epoch
+            ep_index += 1
+            print('episode: {}, ep_len: {}, reward: {}'.format(ep_index, ep_len, ep_ret))
+
             """
             Perform all SAC updates at the end of the trajectory.
             This is a slight difference from the SAC specified in the
@@ -369,6 +382,18 @@ def sqn(env_fn, actor_critic=core.mlp_actor_critic, ac_kwargs=dict(), seed=0,
             # logger.log_tabular('LossV', average_only=True)
             logger.log_tabular('Time', time.time()-start_time)
             logger.dump_tabular()
+
+            # Save model
+            if ((epoch % save_freq == 0) or (epoch == epochs - 1)) and test_ep_ret > test_ep_ret_best:
+                save_path = saver.save(sess, checkpoint_path+'/model.ckpt', t)
+                print("Model saved in path: %s" % save_path)
+                test_ep_ret_best = test_ep_ret
+
+            if test_ep_ret >= 200:
+                print("Model saved in path: %s" % save_path)
+
+                print('\nEnvironment solved in {:d} episodes!\tAverage Score: {:.2f}'.format(ep_index, test_ep_ret))
+                exit()
 
 if __name__ == '__main__':
     import argparse
